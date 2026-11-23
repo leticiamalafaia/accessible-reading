@@ -1,0 +1,6 @@
+{
+  "name": "ClaraLeitura",
+  "description": "Plataforma de leitura acessível de PDFs para dislexia, TDAH e compreensão assistida com voz natural, personalização visual e OCR.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

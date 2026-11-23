@@ -1,0 +1,78 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-ui: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+    --font-display: "Fraunces", Georgia, serif;
+    --font-mono-tabular: "IBM Plex Mono", ui-monospace, monospace;
+  }
+
+  html {
+    font-family: var(--font-ui);
+    scroll-behavior: smooth;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  body {
+    background-color: #f3f6fb;
+    color: #0f172a;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* High-visibility keyboard focus rings for full accessibility */
+  :focus-visible {
+    outline: 3px solid #0d9488;
+    outline-offset: 2px;
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.studio-card {
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 10px 28px -10px rgba(15, 23, 42, 0.08);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.font-opendyslexic {
+  font-family: "OpenDyslexic", "Lexend", sans-serif;
+}
+
+.font-lexend {
+  font-family: "Lexend", sans-serif;
+}
+
+.font-atkinson {
+  font-family: "Atkinson Hyperlegible", sans-serif;
+}
+
+.font-jakarta {
+  font-family: "Plus Jakarta Sans", sans-serif;
+}
+
+.font-lora {
+  font-family: "Lora", Georgia, serif;
+}
+
+.font-mono-reading {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+
