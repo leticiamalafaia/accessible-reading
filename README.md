@@ -20,6 +20,9 @@ Leitor de PDFs focado em acessibilidade cognitiva e visual para pessoas com **di
   - Armazenamento 100% local via IndexedDB e `localStorage` (documentos, progresso, marcações e anotações salvas).
 - **Leitura Assistida com IA (Opcional e com Consentimento):**
   - Resumo simples do documento, **Esquema visual / Mapa de ideias**, resumo estruturado para anotações, simplificação de trechos, dicionário acessível, perguntas sugeridas e Q&A contextual.
+- **Acesso Protegido e Segurança:**
+  - Tela de autenticação com e-mail e senha, ativação segura de primeiro acesso para a conta administradora, criptografia de senhas com `scrypt` + sal único por conta, tokens assinados mantidos apenas em memória e revogação de sessões.
+  - Cabeçalhos de segurança HTTP, limite de requisições por janela, bloqueio temporário contra tentativas repetidas de login, validação de assinatura binária (`%PDF-`) e tamanho de arquivos, e proteção de todas as rotas `/api/ai/*`.
 
 ## Tecnologias
 
@@ -31,12 +34,13 @@ Leitor de PDFs focado em acessibilidade cognitiva e visual para pessoas com **di
 
 ```text
 ├── server.ts                 # Servidor Express + rotas /api/ai/* + middleware Vite
+├── serverAuth.ts             # Autenticação, hashing scrypt, sessões, rate limit e cabeçalhos
 ├── index.html                # Entrada HTML e fontes acessíveis
 ├── src/
-│   ├── App.tsx               # Estado principal, roteamento de abas e consentimento
-│   ├── components/           # Interface do leitor, controles de voz, sumário e IA
+│   ├── App.tsx               # Estado principal, controle de acesso, abas e consentimento
+│   ├── components/           # Interface de login, leitor, controles de voz, sumário e IA
 │   ├── hooks/                # Hook de narração sincronizada (useSpeechReader)
-│   ├── lib/                  # Processador de PDF/OCR, IndexedDB, ajustes e cliente API
+│   ├── lib/                  # Cliente de auth, processador de PDF/OCR, IndexedDB e API
 │   └── types/                # Tipagens TypeScript do domínio
 ├── .env.example              # Modelo de variáveis de ambiente
 └── package.json
@@ -57,7 +61,7 @@ npm install
 
 ### 2. Configurar variáveis de ambiente
 
-Copie `.env.example` para `.env` e preencha sua chave da API Gemini (necessária apenas para os recursos opcionais de Leitura Assistida, OCR com IA e Vozes Naturais IA):
+Copie `.env.example` para `.env` e preencha sua chave da API Gemini (necessária apenas para os recursos opcionais de Leitura Assistida, OCR com IA e Vozes Naturais IA). Opcionalmente, defina `ADMIN_EMAIL` e `ADMIN_PASSWORD` para gerenciar a conta principal por ambiente:
 
 ```bash
 cp .env.example .env
@@ -65,6 +69,8 @@ cp .env.example .env
 
 ```env
 GEMINI_API_KEY="sua-chave-aqui"
+ADMIN_EMAIL=""
+ADMIN_PASSWORD=""
 ```
 
 ### 3. Iniciar em modo desenvolvimento
@@ -82,6 +88,6 @@ A aplicação estará disponível em `http://localhost:3000`.
 - `npm run lint` — executa checagem de tipos TypeScript (`tsc --noEmit`)
 - `npm run start` — inicia o servidor de produção (`NODE_ENV=production`)
 
-## Privacidade
+## Segurança e Privacidade
 
-Os arquivos PDF, histórico de leitura, marcações coloridas e anotações ficam armazenados apenas no navegador do usuário. Os recursos de IA são estritamente opcionais e só enviam trechos mediante consentimento explícito.
+Os arquivos PDF, histórico de leitura, marcações coloridas e anotações ficam armazenados apenas no navegador do usuário. As senhas de acesso são protegidas no servidor com hash `scrypt` e sal exclusivo (nunca armazenadas em texto puro), os tokens de sessão permanecem somente na memória da aba e os recursos de IA exigem autenticação e consentimento explícito.

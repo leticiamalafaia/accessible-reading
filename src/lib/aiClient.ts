@@ -3,6 +3,7 @@ import {
   GeminiVoiceName,
   ReadingTone,
 } from "../types/reader";
+import { getAuthHeaders } from "./authClient";
 
 async function fetchWithTimeout(
   url: string,
@@ -72,7 +73,10 @@ export async function requestComprehension(params: {
     "/api/ai/comprehension",
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...getAuthHeaders(),
+      },
       body: JSON.stringify(params),
     },
     38000
@@ -102,7 +106,10 @@ export async function requestAiOcr(
     "/api/ai/ocr",
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...getAuthHeaders(),
+      },
       body: JSON.stringify({
         imageBase64,
         mimeType: "image/png",
@@ -144,7 +151,10 @@ export async function requestAiTts(
     "/api/ai/tts",
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...getAuthHeaders(),
+      },
       body: JSON.stringify({ text, voiceName, readingTone, forceRetry }),
     },
     22000,

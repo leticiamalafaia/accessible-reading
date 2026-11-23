@@ -4,8 +4,11 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Loader2, RefreshCw, ShieldAlert } from "lucide-react";
 import {
   AppView,
+  AuthStatusResponse,
+  AuthUser,
   ComprehensionAction,
   ComprehensionEntry,
   DocumentStudyNote,
@@ -39,6 +42,7 @@ import {
   runLocalOcrOnDocument,
 } from "./lib/pdfProcessor";
 import { requestComprehension } from "./lib/aiClient";
+import { fetchAuthStatus, logoutSession } from "./lib/authClient";
 import { useSpeechReader } from "./hooks/useSpeechReader";
 import { TopBar } from "./components/TopBar";
 import { UploadWelcome } from "./components/UploadWelcome";
@@ -48,6 +52,8 @@ import { AiConsentDialog } from "./components/AiConsentDialog";
 import { LibraryView } from "./components/LibraryView";
 import { SettingsView } from "./components/SettingsView";
 import { PrivacyView } from "./components/PrivacyView";
+import { AuthGateView } from "./components/AuthGateView";
+import { AppFooter } from "./components/AppFooter";
 
 const ACTION_TITLES: Record<ComprehensionAction, string> = {
   summary: "Resumo simples do documento",
@@ -61,6 +67,11 @@ const ACTION_TITLES: Record<ComprehensionAction, string> = {
 };
 
 export default function App() {
+  const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authLoadError, setAuthLoadError] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+
   const [activeView, setActiveView] = useState<AppView>("reader");
   const [settings, setSettings] = useState<ReaderSettings>(() =>
     loadReaderSettings()
@@ -117,6 +128,27 @@ export default function App() {
     const defaults = resetReaderSettings();
     setSettings(defaults);
   }, []);
+
+  const loadAuthStatus = useCallback(async () => {
+    setAuthLoading(true);
+    setAuthLoadError(null);
+    try {
+      const status = await fetchAuthStatus();
+      setAuthStatus(status);
+    } catch (err) {
+      setAuthLoadError(
+        err instanceof Error
+          ? err.message
+          : "Não foi possível verificar o serviço de autenticação."
+      );
+    } finally {
+      setAuthLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadAuthStatus();
+  }, [loadAuthStatus]);
 
   // Load saved local documents on mount
   useEffect(() => {
@@ -451,6 +483,7 @@ export default function App() {
   // Fetch suggested questions automatically once assistant opens & consent is given (debounced so it never races user actions)
   useEffect(() => {
     if (
+      !currentUser ||
       !assistantOpen ||
       !settings.aiConsentGiven ||
       !activeDoc ||
@@ -487,6 +520,7 @@ export default function App() {
   }, [
     activeDoc,
     assistantOpen,
+    currentUser,
     fullDocumentText,
     isAiLoading,
     settings.aiConsentGiven,
@@ -711,8 +745,85 @@ export default function App() {
   const activeParagraphText =
     activeDoc?.paragraphs[speech.position.paragraphIndex]?.text || "";
 
+  const handleLogout = useCallback(
+    async (allSessions = false) => {
+      speech.stopAll();
+      await logoutSession(allSessions);
+      setCurrentUser(null);
+      setAssistantOpen(false);
+      setActiveView("reader");
+      loadAuthStatus();
+    },
+    [loadAuthStatus, speech]
+  );
+
+  const handleAuthenticated = useCallback((user: AuthUser) => {
+    setCurrentUser(user);
+    setAuthStatus((prev) =>
+      prev
+        ? {
+            ...prev,
+            needsAdminSetup: false,
+          }
+        : prev
+    );
+  }, []);
+
+  const isFocusModeActive =
+    activeView === "reader" && settings.focusMode && Boolean(activeDoc);
+
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-[#f6f4ef] px-4 text-slate-800">
+        <div className="flex flex-col items-center gap-3 rounded-2xl border border-slate-200/90 bg-white px-8 py-7 shadow-sm">
+          <Loader2 className="h-7 w-7 animate-spin text-teal-700" />
+          <p className="text-sm font-semibold text-slate-800">
+            Verificando acesso protegido...
+          </p>
+          <p className="text-xs text-slate-500">Leitura Acessível</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    if (authStatus) {
+      return (
+        <AuthGateView
+          authStatus={authStatus}
+          onAuthenticated={handleAuthenticated}
+        />
+      );
+    }
+
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-[#f6f4ef] px-4 text-slate-800">
+        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-amber-50 text-amber-700">
+            <ShieldAlert className="h-6 w-6" />
+          </div>
+          <h1 className="mt-4 font-display text-lg font-bold text-slate-900">
+            Serviço de autenticação indisponível
+          </h1>
+          <p className="mt-2 text-sm text-slate-600">
+            {authLoadError ||
+              "Não foi possível conectar ao servidor para validar o acesso."}
+          </p>
+          <button
+            type="button"
+            onClick={loadAuthStatus}
+            className="mt-5 inline-flex min-h-[42px] items-center justify-center gap-2 rounded-xl bg-teal-700 px-5 text-sm font-semibold text-white hover:bg-teal-800"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Tentar novamente
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen w-full overflow-x-clip bg-transparent text-slate-900">
+    <div className="flex min-h-screen w-full flex-col overflow-x-clip bg-transparent text-slate-900">
       {/* Hidden global PDF file picker */}
       <input
         ref={fileInputRef}
@@ -735,8 +846,12 @@ export default function App() {
           setActiveView(view);
         }}
         onTriggerUpload={() => fileInputRef.current?.click()}
-        isFocusMode={activeView === "reader" && settings.focusMode && Boolean(activeDoc)}
+        isFocusMode={isFocusModeActive}
+        currentUser={currentUser}
+        onLogout={() => handleLogout(false)}
       />
+
+      <div className="flex-1">
 
       {activeView === "reader" && !activeDoc && (
         <UploadWelcome
@@ -876,11 +991,26 @@ export default function App() {
 
       {activeView === "privacy" && (
         <PrivacyView
+          currentUser={currentUser}
+          onUserUpdated={setCurrentUser}
+          onLogout={handleLogout}
           documentCount={documents.length}
           aiConsentGiven={settings.aiConsentGiven}
           onToggleAiConsent={(val) => updateSettings({ aiConsentGiven: val })}
           onDeleteAllData={handleClearAllData}
           onResetSettings={handleResetSettings}
+        />
+      )}
+      </div>
+
+      {!isFocusModeActive && (
+        <AppFooter
+          onSelectView={(view) => {
+            if (view !== "reader" && settings.focusMode) {
+              updateSettings({ focusMode: false });
+            }
+            setActiveView(view);
+          }}
         />
       )}
 

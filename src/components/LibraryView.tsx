@@ -98,6 +98,43 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         </div>
       </div>
 
+      {/* Library summary metrics */}
+      {documents.length > 0 && (
+        <section
+          aria-label="Resumo da biblioteca"
+          className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3"
+        >
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-medium text-slate-500">
+              Documentos salvos
+            </p>
+            <p className="mt-1 font-display text-2xl font-bold text-slate-950 tabular-nums">
+              {documents.length}
+            </p>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-medium text-slate-500">
+              Páginas indexadas
+            </p>
+            <p className="mt-1 font-display text-2xl font-bold text-slate-950 tabular-nums">
+              {documents.reduce((acc, d) => acc + (d.pageCount || 0), 0)}
+            </p>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-medium text-slate-500">
+              Trechos marcados e anotações
+            </p>
+            <p className="mt-1 font-display text-2xl font-bold text-teal-800 tabular-nums">
+              {documents.reduce(
+                (acc, d) =>
+                  acc + (d.highlights?.length || 0) + (d.studyNotes?.length || 0),
+                0
+              )}
+            </p>
+          </div>
+        </section>
+      )}
+
       {/* Search bar */}
       {documents.length > 0 && (
         <div className="mt-6">

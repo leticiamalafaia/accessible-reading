@@ -24,3 +24,7 @@ Thumbs.db
 # Temporary uploaded attachments
 public/assets/aistudio/
 
+# Local runtime data store (hashed credentials)
+.data/
+
+

@@ -1,5 +1,22 @@
 export type AppView = "reader" | "library" | "settings" | "privacy";
 
+export interface AuthUser {
+  id: string;
+  name: string;
+  email: string;
+  role: "admin" | "user";
+  createdAt: number;
+  lastLoginAt?: number;
+  managedByEnv?: boolean;
+}
+
+export interface AuthStatusResponse {
+  ownerEmail: string;
+  needsAdminSetup: boolean;
+  adminConfiguredByEnv: boolean;
+  registrationEnabled: boolean;
+}
+
 export type ReadingFontFamily =
   | "opendyslexic"
   | "lexend"

@@ -3,6 +3,12 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
+import {
+  createRateLimiter,
+  mountAuthRoutes,
+  requireAuth,
+  securityHeadersMiddleware,
+} from "./serverAuth";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -171,6 +177,8 @@ function formatAiError(error: unknown): { status: number; message: string } {
 
 async function startServer() {
   const app = express();
+  app.disable("x-powered-by");
+  app.use(securityHeadersMiddleware);
   app.use(express.json({ limit: "20mb" }));
 
   app.get("/favicon.ico", (_req, res) => {
@@ -181,6 +189,15 @@ async function startServer() {
     res.json({ ok: true });
   });
 
+  mountAuthRoutes(app);
+
+  const aiRateLimiter = createRateLimiter(
+    5 * 60 * 1000,
+    45,
+    "Limite temporário de solicitações de IA atingido. Aguarde alguns instantes."
+  );
+  app.use("/api/ai", requireAuth, aiRateLimiter);
+
   app.post("/api/ai/comprehension", async (req, res) => {
     try {
       const {
@@ -189,7 +206,7 @@ async function startServer() {
         selectedText,
         question,
         history,
-      } = req.body as {
+      } = (req.body || {}) as {
         action:
           | "summary"
           | "visual_diagram"
@@ -206,12 +223,13 @@ async function startServer() {
         history?: Array<{ role: "user" | "assistant"; content: string }>;
       };
 
-      if (!action) {
+      if (typeof action !== "string" || !action) {
         return res.status(400).json({ error: "Ação não especificada." });
       }
 
-      const rawDocText = (documentText || "").trim();
-      const targetSlice = (selectedText || "").trim().slice(0, 8000);
+      const rawDocText = typeof documentText === "string" ? documentText.trim() : "";
+      const targetSlice =
+        typeof selectedText === "string" ? selectedText.trim().slice(0, 8000) : "";
       const contextSlice = buildRepresentativeDocumentSlice(rawDocText, 45000);
       const localContext = extractSurroundingContext(rawDocText, targetSlice, 4000);
 
@@ -355,7 +373,9 @@ async function startServer() {
           break;
 
         case "qa": {
-          if (!question?.trim()) {
+          const safeQuestion =
+            typeof question === "string" ? question.trim().slice(0, 1000) : "";
+          if (!safeQuestion) {
             return res.status(400).json({ error: "Digite uma pergunta para continuar." });
           }
           if (!contextSlice) {
@@ -364,10 +384,19 @@ async function startServer() {
                 "O documento ainda não possui texto extraído para responder perguntas. Execute o OCR primeiro se for um PDF digitalizado.",
             });
           }
-          const conversationContext = (history || [])
-            .filter((m) => m.content?.trim())
+          const conversationContext = (Array.isArray(history) ? history : [])
+            .filter(
+              (m) =>
+                m &&
+                (m.role === "user" || m.role === "assistant") &&
+                typeof m.content === "string" &&
+                m.content.trim().length > 0
+            )
             .slice(-6)
-            .map((m) => `${m.role === "user" ? "Leitor" : "Assistente"}: ${m.content}`)
+            .map(
+              (m) =>
+                `${m.role === "user" ? "Leitor" : "Assistente"}: ${m.content.trim().slice(0, 1000)}`
+            )
             .join("\n");
 
           prompt =
@@ -375,7 +404,7 @@ async function startServer() {
             "Mantenha a resposta curta, clara e fácil de ler.\n\n" +
             `Documento:\n"""\n${contextSlice}\n"""\n\n` +
             (conversationContext ? `Conversa anterior:\n${conversationContext}\n\n` : "") +
-            `Pergunta atual do leitor: ${question}`;
+            `Pergunta atual do leitor: ${safeQuestion}`;
           break;
         }
 
@@ -457,9 +486,19 @@ async function startServer() {
         pageNumber?: number;
       };
 
-      if (!imageBase64) {
+      if (typeof imageBase64 !== "string" || !imageBase64.trim()) {
         return res.status(400).json({ error: "Imagem da página não enviada." });
       }
+
+      const allowedOcrMimes = new Set(["image/png", "image/jpeg", "image/webp"]);
+      const safeMimeType =
+        typeof mimeType === "string" && allowedOcrMimes.has(mimeType)
+          ? mimeType
+          : "image/png";
+      const safePageNum =
+        typeof pageNumber === "number" && Number.isFinite(pageNumber) && pageNumber > 0
+          ? Math.floor(pageNumber)
+          : 1;
 
       const ai = getAiClient();
       const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, "");
@@ -471,13 +510,13 @@ async function startServer() {
             parts: [
               {
                 inlineData: {
-                  mimeType: mimeType || "image/png",
+                  mimeType: safeMimeType,
                   data: cleanBase64,
                 },
               },
               {
                 text:
-                  `Extraia todo o texto visível desta página digitalizada (página ${pageNumber || 1}) na ordem natural de leitura. ` +
+                  `Extraia todo o texto visível desta página digitalizada (página ${safePageNum}) na ordem natural de leitura. ` +
                   "Junte quebras de linha artificiais dentro do mesmo parágrafo para que o texto flua naturalmente, mas preserve separações reais entre títulos e parágrafos com uma linha em branco. " +
                   "Não adicione comentários nem invente palavras; retorne apenas o texto extraído.",
               },

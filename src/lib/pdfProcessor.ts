@@ -286,11 +286,28 @@ export function resolveParagraphChapter(
   return docTitle || "Início do documento";
 }
 
+const MAX_PDF_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
+
 export async function processPdfFile(
   file: File,
   onProgress?: (currentPage: number, totalPages: number) => void
 ): Promise<PdfDocumentRecord> {
+  if (!file || file.size === 0) {
+    throw new Error("O arquivo selecionado está vazio. Escolha um PDF válido.");
+  }
+  if (file.size > MAX_PDF_FILE_BYTES) {
+    throw new Error(
+      "O arquivo excede o limite de 50 MB. Escolha um PDF menor para manter a leitura fluida."
+    );
+  }
   const arrayBuffer = await file.arrayBuffer();
+  const headerBytes = new Uint8Array(arrayBuffer.slice(0, 1024));
+  const headerText = new TextDecoder("latin1").decode(headerBytes);
+  if (!headerText.includes("%PDF-")) {
+    throw new Error(
+      "O arquivo enviado não possui uma assinatura PDF válida. Selecione um documento .pdf legítimo."
+    );
+  }
   const dataCopy = arrayBuffer.slice(0);
   const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
   const pdf = await loadingTask.promise;
