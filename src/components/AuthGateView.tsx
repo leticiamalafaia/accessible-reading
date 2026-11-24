@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   Eye,
   EyeOff,
+  Info,
   KeyRound,
   Loader2,
   Lock,
@@ -13,6 +14,7 @@ import {
 } from "lucide-react";
 import { AuthStatusResponse, AuthUser } from "../types/reader";
 import {
+  AuthApiError,
   loginWithPassword,
   registerAccount,
   setupAdminAccount,
@@ -22,6 +24,7 @@ import calmDeskImg from "../assets/images/calm_reading_desk_1794575615148.jpg";
 interface AuthGateViewProps {
   authStatus: AuthStatusResponse;
   onAuthenticated: (user: AuthUser) => void;
+  onRefreshAuthStatus?: () => void;
 }
 
 type AuthMode = "setup" | "login" | "register";
@@ -71,10 +74,27 @@ function evaluatePasswordStrength(password: string): {
   };
 }
 
+function validatePasswordClient(password: string): string | null {
+  if (!password) {
+    return "Digite uma senha para continuar.";
+  }
+  if (password.length < 8) {
+    return "A senha precisa ter pelo menos 8 caracteres.";
+  }
+  if (!/\p{L}/u.test(password) || !/\d/.test(password)) {
+    return "A senha deve combinar pelo menos uma letra e um número.";
+  }
+  return null;
+}
+
 export const AuthGateView: React.FC<AuthGateViewProps> = ({
   authStatus,
   onAuthenticated,
+  onRefreshAuthStatus,
 }) => {
+  const [setupAlreadyClaimed, setSetupAlreadyClaimed] = useState(false);
+  const showSetupOption = authStatus.needsAdminSetup && !setupAlreadyClaimed;
+
   const [mode, setMode] = useState<AuthMode>(
     authStatus.needsAdminSetup ? "setup" : "login"
   );
@@ -87,14 +107,19 @@ export const AuthGateView: React.FC<AuthGateViewProps> = ({
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
+  // If server status updates to needsAdminSetup === false while on setup tab,
+  // transition smoothly to the login tab instead of leaving the user stuck.
   useEffect(() => {
-    if (authStatus.needsAdminSetup) {
-      setMode("setup");
-      setEmail(authStatus.ownerEmail);
-      setName("Leticia");
+    if (!authStatus.needsAdminSetup && mode === "setup") {
+      setMode("login");
+      setEmail((prev) => prev || authStatus.ownerEmail);
+      setPassword("");
+      setConfirmPassword("");
+      setErrorMessage(null);
     }
-  }, [authStatus.needsAdminSetup, authStatus.ownerEmail]);
+  }, [authStatus.needsAdminSetup, authStatus.ownerEmail, mode]);
 
   const strength = useMemo(
     () => evaluatePasswordStrength(password),
@@ -104,6 +129,7 @@ export const AuthGateView: React.FC<AuthGateViewProps> = ({
   const switchMode = (nextMode: AuthMode) => {
     setMode(nextMode);
     setErrorMessage(null);
+    setInfoMessage(null);
     setPassword("");
     setConfirmPassword("");
     if (nextMode === "setup") {
@@ -120,25 +146,51 @@ export const AuthGateView: React.FC<AuthGateViewProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
+    setInfoMessage(null);
 
     if (mode === "setup") {
+      const trimmedName = name.trim() || "Leticia";
+      const passwordErr = validatePasswordClient(password);
+      if (passwordErr) {
+        setErrorMessage(passwordErr);
+        return;
+      }
+      if (!confirmPassword) {
+        setErrorMessage("Confirme a senha no segundo campo antes de continuar.");
+        return;
+      }
       if (password !== confirmPassword) {
         setErrorMessage("As senhas digitadas não coincidem.");
         return;
       }
+
       setIsSubmitting(true);
       try {
         const result = await setupAdminAccount({
-          name: name.trim() || "Leticia",
+          name: trimmedName,
           password,
         });
         onAuthenticated(result.user);
       } catch (err) {
-        setErrorMessage(
-          err instanceof Error
-            ? err.message
-            : "Não foi possível ativar sua conta."
-        );
+        if (err instanceof AuthApiError && err.status === 409) {
+          // Admin account was already activated or configured via environment variable:
+          // switch immediately to the Login tab so the user is never blocked.
+          setSetupAlreadyClaimed(true);
+          setMode("login");
+          setEmail(authStatus.ownerEmail);
+          setPassword("");
+          setConfirmPassword("");
+          setInfoMessage(
+            "Sua conta de administradora já está configurada. Digite seu e-mail e senha abaixo para entrar."
+          );
+          onRefreshAuthStatus?.();
+        } else {
+          setErrorMessage(
+            err instanceof Error
+              ? err.message
+              : "Não foi possível ativar sua conta."
+          );
+        }
       } finally {
         setIsSubmitting(false);
       }
@@ -146,15 +198,31 @@ export const AuthGateView: React.FC<AuthGateViewProps> = ({
     }
 
     if (mode === "register") {
+      const trimmedName = name.trim();
+      const trimmedEmail = email.trim();
+      if (trimmedName.length < 2) {
+        setErrorMessage("Informe seu nome (mínimo de 2 letras).");
+        return;
+      }
+      if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmedEmail)) {
+        setErrorMessage("Informe um endereço de e-mail válido.");
+        return;
+      }
+      const passwordErr = validatePasswordClient(password);
+      if (passwordErr) {
+        setErrorMessage(passwordErr);
+        return;
+      }
       if (password !== confirmPassword) {
         setErrorMessage("As senhas digitadas não coincidem.");
         return;
       }
+
       setIsSubmitting(true);
       try {
         const result = await registerAccount({
-          name: name.trim(),
-          email: email.trim(),
+          name: trimmedName,
+          email: trimmedEmail,
           password,
         });
         onAuthenticated(result.user);
@@ -168,10 +236,21 @@ export const AuthGateView: React.FC<AuthGateViewProps> = ({
       return;
     }
 
+    // Login mode
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmedEmail)) {
+      setErrorMessage("Informe um e-mail válido para entrar.");
+      return;
+    }
+    if (!password) {
+      setErrorMessage("Digite sua senha para entrar.");
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const result = await loginWithPassword({
-        email: email.trim(),
+        email: trimmedEmail,
         password,
       });
       onAuthenticated(result.user);
@@ -263,72 +342,104 @@ export const AuthGateView: React.FC<AuthGateViewProps> = ({
           {/* Right Auth Form Column */}
           <div className="flex flex-col justify-center lg:col-span-6">
             <div className="studio-card rounded-2xl border border-slate-200/90 bg-white p-6 sm:p-8">
-              {/* Mode selector */}
-              {authStatus.needsAdminSetup ? (
-                <div className="mb-6 border-b border-slate-200 pb-5">
-                  <div className="flex items-center gap-2.5 text-teal-800">
-                    <ShieldCheck className="h-5 w-5 shrink-0" aria-hidden="true" />
-                    <p className="text-xs font-bold tracking-wider uppercase">
-                      Primeiro acesso · Conta da proprietária
+              {/* Always-available mode switcher so users can move freely between Setup, Login, and Register */}
+              <div className="mb-6">
+                <div
+                  role="tablist"
+                  aria-label="Modo de autenticação"
+                  className={`grid gap-1 rounded-xl bg-slate-100 p-1 ${
+                    showSetupOption ? "grid-cols-3" : "grid-cols-2"
+                  }`}
+                >
+                  {showSetupOption && (
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={mode === "setup"}
+                      onClick={() => switchMode("setup")}
+                      className={`min-h-[42px] rounded-lg px-2.5 text-xs sm:text-sm font-semibold transition-all whitespace-nowrap ${
+                        mode === "setup"
+                          ? "bg-white text-teal-900 shadow-xs"
+                          : "text-slate-600 hover:text-slate-950"
+                      }`}
+                    >
+                      1º acesso
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={mode === "login"}
+                    onClick={() => switchMode("login")}
+                    className={`min-h-[42px] rounded-lg px-3 text-xs sm:text-sm font-semibold transition-all whitespace-nowrap ${
+                      mode === "login"
+                        ? "bg-white text-slate-950 shadow-xs"
+                        : "text-slate-600 hover:text-slate-950"
+                    }`}
+                  >
+                    Entrar
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={mode === "register"}
+                    onClick={() => switchMode("register")}
+                    className={`min-h-[42px] rounded-lg px-3 text-xs sm:text-sm font-semibold transition-all whitespace-nowrap ${
+                      mode === "register"
+                        ? "bg-white text-slate-950 shadow-xs"
+                        : "text-slate-600 hover:text-slate-950"
+                    }`}
+                  >
+                    Criar conta
+                  </button>
+                </div>
+
+                {mode === "setup" ? (
+                  <div className="mt-5">
+                    <div className="flex items-center gap-2 text-teal-800">
+                      <ShieldCheck
+                        className="h-4 w-4 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <p className="text-xs font-bold tracking-wider uppercase">
+                        Primeiro acesso · Conta da proprietária
+                      </p>
+                    </div>
+                    <h2 className="font-display mt-2 text-2xl font-bold text-slate-950">
+                      Ative seu acesso de Administradora
+                    </h2>
+                    <p className="mt-1.5 text-sm leading-relaxed text-slate-600">
+                      Sua conta pessoal (
+                      <strong className="font-semibold text-slate-900">
+                        {authStatus.ownerEmail}
+                      </strong>
+                      ) está pré-reservada. Escolha uma senha abaixo para ativar
+                      e entrar imediatamente.
                     </p>
                   </div>
-                  <h2 className="font-display mt-2 text-2xl font-bold text-slate-950">
-                    Ative seu acesso de Administradora
-                  </h2>
-                  <p className="mt-1.5 text-sm leading-relaxed text-slate-600">
-                    Sua conta pessoal (
-                    <strong className="font-semibold text-slate-900">
-                      {authStatus.ownerEmail}
-                    </strong>
-                    ) já está pré-reservada. Escolha uma senha forte abaixo para
-                    ativar e entrar imediatamente.
-                  </p>
-                </div>
-              ) : (
-                <div className="mb-6">
-                  <div
-                    role="tablist"
-                    aria-label="Modo de autenticação"
-                    className="grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1"
-                  >
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={mode === "login"}
-                      onClick={() => switchMode("login")}
-                      className={`min-h-[42px] rounded-lg px-3 text-sm font-semibold transition-all whitespace-nowrap ${
-                        mode === "login"
-                          ? "bg-white text-slate-950 shadow-xs"
-                          : "text-slate-600 hover:text-slate-950"
-                      }`}
-                    >
-                      Entrar
-                    </button>
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={mode === "register"}
-                      onClick={() => switchMode("register")}
-                      className={`min-h-[42px] rounded-lg px-3 text-sm font-semibold transition-all whitespace-nowrap ${
-                        mode === "register"
-                          ? "bg-white text-slate-950 shadow-xs"
-                          : "text-slate-600 hover:text-slate-950"
-                      }`}
-                    >
-                      Criar conta
-                    </button>
+                ) : (
+                  <div className="mt-5">
+                    <h2 className="font-display text-2xl font-bold text-slate-950">
+                      {mode === "login"
+                        ? "Entrar no Leitura Acessível"
+                        : "Criar uma nova conta"}
+                    </h2>
+                    <p className="mt-1 text-sm text-slate-600">
+                      {mode === "login"
+                        ? "Informe seu e-mail e senha para acessar seu ambiente de leitura."
+                        : "Cadastre-se com seu e-mail e uma senha segura para começar."}
+                    </p>
                   </div>
+                )}
+              </div>
 
-                  <h2 className="font-display mt-5 text-2xl font-bold text-slate-950">
-                    {mode === "login"
-                      ? "Entrar no Leitura Acessível"
-                      : "Criar uma nova conta"}
-                  </h2>
-                  <p className="mt-1 text-sm text-slate-600">
-                    {mode === "login"
-                      ? "Informe seu e-mail e senha para acessar seu ambiente de leitura."
-                      : "Cadastre-se com seu e-mail e uma senha segura para começar."}
-                  </p>
+              {infoMessage && (
+                <div
+                  role="status"
+                  className="mb-5 flex items-start gap-2.5 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm font-medium text-teal-900"
+                >
+                  <Info className="mt-0.5 h-4 w-4 shrink-0 text-teal-700" aria-hidden="true" />
+                  <span>{infoMessage}</span>
                 </div>
               )}
 
@@ -341,7 +452,7 @@ export const AuthGateView: React.FC<AuthGateViewProps> = ({
                 </div>
               )}
 
-              <form onSubmit={handleSubmit} className="space-y-4">
+              <form onSubmit={handleSubmit} noValidate className="space-y-4">
                 {(mode === "setup" || mode === "register") && (
                   <div>
                     <label
@@ -359,8 +470,6 @@ export const AuthGateView: React.FC<AuthGateViewProps> = ({
                         id="auth-name"
                         type="text"
                         autoComplete="name"
-                        required
-                        minLength={2}
                         maxLength={80}
                         value={name}
                         onChange={(e) => setName(e.target.value)}
@@ -387,7 +496,6 @@ export const AuthGateView: React.FC<AuthGateViewProps> = ({
                       id="auth-email"
                       type="email"
                       autoComplete="email"
-                      required
                       readOnly={mode === "setup"}
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
@@ -421,8 +529,6 @@ export const AuthGateView: React.FC<AuthGateViewProps> = ({
                       autoComplete={
                         mode === "login" ? "current-password" : "new-password"
                       }
-                      required
-                      minLength={mode === "login" ? 1 : 8}
                       maxLength={128}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
@@ -487,8 +593,6 @@ export const AuthGateView: React.FC<AuthGateViewProps> = ({
                         id="auth-confirm-password"
                         type={showPassword ? "text" : "password"}
                         autoComplete="new-password"
-                        required
-                        minLength={8}
                         maxLength={128}
                         value={confirmPassword}
                         onChange={(e) => setConfirmPassword(e.target.value)}
@@ -528,24 +632,20 @@ export const AuthGateView: React.FC<AuthGateViewProps> = ({
                 </button>
               </form>
 
-              {authStatus.needsAdminSetup && (
+              {mode === "setup" && (
                 <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-4 text-xs text-slate-600">
-                  <span>Deseja cadastrar outro e-mail?</span>
+                  <span>Já configurou sua senha?</span>
                   <button
                     type="button"
-                    onClick={() =>
-                      switchMode(mode === "setup" ? "register" : "setup")
-                    }
-                    className="font-semibold text-teal-800 hover:underline"
+                    onClick={() => switchMode("login")}
+                    className="font-semibold text-teal-800 hover:underline whitespace-nowrap"
                   >
-                    {mode === "setup"
-                      ? "Criar outra conta"
-                      : "Voltar para ativação principal"}
+                    Ir para tela de login
                   </button>
                 </div>
               )}
 
-              {!authStatus.needsAdminSetup && mode === "login" && (
+              {mode === "login" && (
                 <p className="mt-5 border-t border-slate-200 pt-4 text-xs leading-relaxed text-slate-500">
                   Acesso protegido contra tentativas excessivas. Seus documentos
                   e marcações continuam salvos localmente neste navegador.

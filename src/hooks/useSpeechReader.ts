@@ -7,6 +7,7 @@ import {
   UnlimitedVoiceProfileId,
 } from "../types/reader";
 import { requestAiTts, TtsQuotaError } from "../lib/aiClient";
+import { getCachedTtsAudio, saveCachedTtsAudio } from "../lib/ttsAudioCache";
 import {
   AI_VOICE_OPTIONS,
   isGoogleBrowserVoice,
@@ -725,6 +726,17 @@ export function useSpeechReader({
       const cacheKey = `${voice}:${tone}:${normalized}`;
       const existing = audioCacheRef.current.get(cacheKey);
       if (existing) return existing;
+
+      const persisted = await getCachedTtsAudio(cacheKey);
+      if (persisted) {
+        if (audioCacheRef.current.size >= 40) {
+          const oldestKey = audioCacheRef.current.keys().next().value;
+          if (oldestKey) audioCacheRef.current.delete(oldestKey);
+        }
+        audioCacheRef.current.set(cacheKey, persisted);
+        return persisted;
+      }
+
       const shouldForceRetry = forceRetryNextAiTtsRef.current;
       forceRetryNextAiTtsRef.current = false;
       const generated = await requestAiTts(
@@ -739,6 +751,8 @@ export function useSpeechReader({
         if (oldestKey) audioCacheRef.current.delete(oldestKey);
       }
       audioCacheRef.current.set(cacheKey, generated);
+      // Persist locally in IndexedDB so re-listening never uses free API quota again
+      void saveCachedTtsAudio(cacheKey, generated);
       return generated;
     },
     []
@@ -766,7 +780,8 @@ export function useSpeechReader({
       if (runId !== activeRunIdRef.current) return;
       const list = paragraphsRef.current;
 
-      const segment = buildSpeechSegment(list, startParaIdx, 2400, 12);
+      // Larger segments (up to 4,200 chars / 22 paragraphs) halve free-tier API calls per document
+      const segment = buildSpeechSegment(list, startParaIdx, 4200, 22);
       if (!segment) {
         stopAll();
         return;
@@ -774,6 +789,14 @@ export function useSpeechReader({
 
       const cacheKey = `${aiVoiceName}:${readingTone}:${segment.text}`;
       let audioSrc = audioCacheRef.current.get(cacheKey);
+      if (!audioSrc) {
+        const persisted = await getCachedTtsAudio(cacheKey);
+        if (runId !== activeRunIdRef.current) return;
+        if (persisted) {
+          audioCacheRef.current.set(cacheKey, persisted);
+          audioSrc = persisted;
+        }
+      }
 
       if (!audioSrc && geminiQuotaExhaustedRef.current) {
         activateQuotaFallback();

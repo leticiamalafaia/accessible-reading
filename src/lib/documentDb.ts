@@ -39,14 +39,30 @@ function openDb(): Promise<IDBDatabase> {
   return dbPromise;
 }
 
-export async function saveDocumentToDb(doc: PdfDocumentRecord): Promise<void> {
+interface StoredLocalDocument extends PdfDocumentRecord {
+  ownerEmail?: string;
+}
+
+function normalizeOwnerEmail(ownerEmail?: string): string | undefined {
+  const clean = ownerEmail?.trim().toLowerCase();
+  return clean || undefined;
+}
+
+export async function saveDocumentToDb(
+  doc: PdfDocumentRecord,
+  ownerEmail?: string
+): Promise<void> {
   const db = await openDb();
   const { pdfData, ...lightweightDoc } = doc;
+  const normalizedOwner = normalizeOwnerEmail(ownerEmail);
+  const recordToStore: StoredLocalDocument = normalizedOwner
+    ? { ...lightweightDoc, ownerEmail: normalizedOwner }
+    : lightweightDoc;
 
   return new Promise((resolve, reject) => {
     const stores = pdfData ? [STORE_NAME, BLOB_STORE_NAME] : [STORE_NAME];
     const tx = db.transaction(stores, "readwrite");
-    tx.objectStore(STORE_NAME).put(lightweightDoc);
+    tx.objectStore(STORE_NAME).put(recordToStore);
     if (pdfData) {
       tx.objectStore(BLOB_STORE_NAME).put({ id: doc.id, pdfData });
     }
@@ -55,20 +71,27 @@ export async function saveDocumentToDb(doc: PdfDocumentRecord): Promise<void> {
   });
 }
 
-export async function getAllDocumentsFromDb(): Promise<PdfDocumentRecord[]> {
+export async function getAllDocumentsFromDb(
+  ownerEmail?: string
+): Promise<PdfDocumentRecord[]> {
   const db = await openDb();
+  const normalizedOwner = normalizeOwnerEmail(ownerEmail);
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readonly");
     const store = tx.objectStore(STORE_NAME);
     const req = store.getAll();
     req.onsuccess = () => {
-      const items = (req.result as PdfDocumentRecord[]).map((item) => {
-        if (item.pdfData) {
-          // Strip legacy inline ArrayBuffer from memory state after v1->v2
-          const { pdfData: _legacy, ...rest } = item;
-          return rest as PdfDocumentRecord;
-        }
-        return item;
+      const rawItems = req.result as StoredLocalDocument[];
+      const filtered = normalizedOwner
+        ? rawItems.filter(
+            (item) =>
+              item.ownerEmail === normalizedOwner || !item.ownerEmail
+          )
+        : rawItems;
+
+      const items = filtered.map((item) => {
+        const { pdfData: _legacy, ownerEmail: _owner, ...rest } = item;
+        return rest as PdfDocumentRecord;
       });
       items.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
       resolve(items);
@@ -119,21 +142,26 @@ export async function getDocumentPdfDataFromDb(
 
 export async function updateDocumentProgressInDb(
   id: string,
-  lastParagraphIndex: number
+  lastParagraphIndex: number,
+  ownerEmail?: string
 ): Promise<void> {
   const db = await openDb();
+  const normalizedOwner = normalizeOwnerEmail(ownerEmail);
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readwrite");
     const store = tx.objectStore(STORE_NAME);
     const req = store.get(id);
     req.onsuccess = () => {
-      const doc = req.result as PdfDocumentRecord | undefined;
+      const doc = req.result as StoredLocalDocument | undefined;
       if (!doc) {
         resolve();
         return;
       }
       doc.lastParagraphIndex = lastParagraphIndex;
       doc.lastOpenedAt = Date.now();
+      if (normalizedOwner && !doc.ownerEmail) {
+        doc.ownerEmail = normalizedOwner;
+      }
       store.put(doc);
     };
     tx.oncomplete = () => resolve();
@@ -152,12 +180,35 @@ export async function deleteDocumentFromDb(id: string): Promise<void> {
   });
 }
 
-export async function clearAllDocumentsFromDb(): Promise<void> {
+export async function clearAllDocumentsFromDb(
+  ownerEmail?: string
+): Promise<void> {
   const db = await openDb();
+  const normalizedOwner = normalizeOwnerEmail(ownerEmail);
+  if (!normalizedOwner) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([STORE_NAME, BLOB_STORE_NAME], "readwrite");
+      tx.objectStore(STORE_NAME).clear();
+      tx.objectStore(BLOB_STORE_NAME).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   return new Promise((resolve, reject) => {
     const tx = db.transaction([STORE_NAME, BLOB_STORE_NAME], "readwrite");
-    tx.objectStore(STORE_NAME).clear();
-    tx.objectStore(BLOB_STORE_NAME).clear();
+    const docStore = tx.objectStore(STORE_NAME);
+    const blobStore = tx.objectStore(BLOB_STORE_NAME);
+    const req = docStore.getAll();
+    req.onsuccess = () => {
+      const all = req.result as StoredLocalDocument[];
+      for (const item of all) {
+        if (item.ownerEmail === normalizedOwner || !item.ownerEmail) {
+          docStore.delete(item.id);
+          blobStore.delete(item.id);
+        }
+      }
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

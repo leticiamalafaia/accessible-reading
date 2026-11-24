@@ -39,14 +39,14 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-slate-200 pb-6">
         <div>
           <p className="text-xs font-bold tracking-wider uppercase text-teal-700">
-            Acervo pessoal offline
+            Acervo salvo na sua conta
           </p>
           <h1 className="font-display mt-1 text-2xl font-bold tracking-tight text-slate-950 sm:text-3xl">
-            Sua Biblioteca Local
+            Sua Biblioteca
           </h1>
           <p className="mt-1.5 text-sm text-slate-600">
-            Todos os documentos ficam salvos exclusivamente neste navegador, com seu
-            progresso, marcações e ponto de parada preservados.
+            Seus PDFs ficam vinculados à sua conta com progresso, marcações coloridas,
+            anotações e ponto de parada sempre prontos para retomar de onde quiser.
           </p>
         </div>
 

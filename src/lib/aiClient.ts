@@ -157,7 +157,7 @@ export async function requestAiTts(
       },
       body: JSON.stringify({ text, voiceName, readingTone, forceRetry }),
     },
-    22000,
+    35000,
     signal
   );
 

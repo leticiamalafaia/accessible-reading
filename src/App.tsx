@@ -43,6 +43,14 @@ import {
 } from "./lib/pdfProcessor";
 import { requestComprehension } from "./lib/aiClient";
 import { fetchAuthStatus, logoutSession } from "./lib/authClient";
+import {
+  clearAccountDocuments,
+  deleteAccountDocument,
+  fetchAccountDocuments,
+  saveAccountDocument,
+  updateAccountDocumentState,
+} from "./lib/documentsClient";
+import { clearTtsAudioCache } from "./lib/ttsAudioCache";
 import { useSpeechReader } from "./hooks/useSpeechReader";
 import { TopBar } from "./components/TopBar";
 import { UploadWelcome } from "./components/UploadWelcome";
@@ -77,6 +85,7 @@ export default function App() {
     loadReaderSettings()
   );
   const [documents, setDocuments] = useState<PdfDocumentRecord[]>([]);
+  const [isLoadingDocuments, setIsLoadingDocuments] = useState(false);
   const [activeDoc, setActiveDoc] = useState<PdfDocumentRecord | null>(null);
 
   const [isProcessingPdf, setIsProcessingPdf] = useState(false);
@@ -109,6 +118,8 @@ export default function App() {
   const lastFetchedQuestionsDocIdRef = useRef<string | null>(null);
   const activeDocIdRef = useRef<string | null>(null);
   activeDocIdRef.current = activeDoc?.id || null;
+  const currentUserEmailRef = useRef<string | undefined>(undefined);
+  currentUserEmailRef.current = currentUser?.email?.trim().toLowerCase();
   const progressTimerRef = useRef<number | null>(null);
   const playAfterConsentRef = useRef<((overrideEngine?: TtsEngine) => void) | null>(null);
   const pendingAiActionRef = useRef<{
@@ -146,20 +157,110 @@ export default function App() {
     }
   }, []);
 
+  const refreshAuthStatusSilently = useCallback(async () => {
+    try {
+      const status = await fetchAuthStatus();
+      setAuthStatus(status);
+    } catch {
+      // Keep current status if silent refresh fails
+    }
+  }, []);
+
   useEffect(() => {
     loadAuthStatus();
   }, [loadAuthStatus]);
 
-  // Load saved local documents on mount
   useEffect(() => {
-    getAllDocumentsFromDb()
-      .then((docs) => {
-        setDocuments(docs);
+    if (currentUser) return;
+    const handleFocus = () => {
+      refreshAuthStatusSilently();
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        refreshAuthStatusSilently();
+      }
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [currentUser, refreshAuthStatusSilently]);
+
+  // Load and sync account-saved documents whenever the logged-in user changes
+  useEffect(() => {
+    const ownerEmail = currentUser?.email?.trim().toLowerCase();
+    if (!ownerEmail) {
+      setDocuments([]);
+      setActiveDoc(null);
+      setComprehensionEntries([]);
+      setSuggestedQuestions([]);
+      setIsLoadingDocuments(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsLoadingDocuments(true);
+
+    Promise.allSettled([
+      fetchAccountDocuments(),
+      getAllDocumentsFromDb(ownerEmail),
+    ])
+      .then(([serverRes, localRes]) => {
+        if (cancelled) return;
+
+        const serverDocs =
+          serverRes.status === "fulfilled" ? serverRes.value : [];
+        const localDocs =
+          localRes.status === "fulfilled" ? localRes.value : [];
+
+        const serverById = new Map<string, PdfDocumentRecord>();
+        for (const doc of serverDocs) {
+          serverById.set(doc.id, doc);
+        }
+
+        const mergedById = new Map<string, PdfDocumentRecord>();
+        for (const doc of serverDocs) {
+          mergedById.set(doc.id, doc);
+        }
+
+        const docsToUploadToServer: PdfDocumentRecord[] = [];
+        for (const localDoc of localDocs) {
+          const remote = mergedById.get(localDoc.id);
+          if (!remote) {
+            mergedById.set(localDoc.id, localDoc);
+            docsToUploadToServer.push(localDoc);
+          } else if ((localDoc.lastOpenedAt || 0) > (remote.lastOpenedAt || 0)) {
+            mergedById.set(localDoc.id, localDoc);
+            docsToUploadToServer.push(localDoc);
+          }
+        }
+
+        const mergedList = Array.from(mergedById.values()).sort(
+          (a, b) => (b.lastOpenedAt || 0) - (a.lastOpenedAt || 0)
+        );
+        setDocuments(mergedList);
+
+        // Mirror server documents into account-scoped IndexedDB for fast offline access
+        for (const doc of mergedList) {
+          saveDocumentToDb(doc, ownerEmail).catch(() => {});
+        }
+        // Push any local-only / locally-newer documents up to the account on the server
+        for (const doc of docsToUploadToServer) {
+          saveAccountDocument(doc).catch(() => {});
+        }
       })
-      .catch(() => {
-        // IndexedDB unavailable fallback
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoadingDocuments(false);
+        }
       });
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.email]);
 
   useEffect(() => {
     return () => {
@@ -177,11 +278,22 @@ export default function App() {
     }
     progressTimerRef.current = window.setTimeout(() => {
       progressTimerRef.current = null;
-      updateDocumentProgressInDb(docId, index).catch(() => {});
+      const now = Date.now();
+      const ownerEmail = currentUserEmailRef.current;
+      updateDocumentProgressInDb(docId, index, ownerEmail).catch(() => {});
+      updateAccountDocumentState(docId, {
+        lastParagraphIndex: index,
+        lastOpenedAt: now,
+      }).catch(() => {});
+      setActiveDoc((prev) =>
+        prev && prev.id === docId
+          ? { ...prev, lastParagraphIndex: index, lastOpenedAt: now }
+          : prev
+      );
       setDocuments((prev) =>
         prev.map((d) =>
           d.id === docId
-            ? { ...d, lastParagraphIndex: index, lastOpenedAt: Date.now() }
+            ? { ...d, lastParagraphIndex: index, lastOpenedAt: now }
             : d
         )
       );
@@ -242,9 +354,15 @@ export default function App() {
         const parsedDoc = await processPdfFile(file, (page, total) => {
           setProcessingStatus(`Lendo página ${page} de ${total}...`);
         });
-        await saveDocumentToDb(parsedDoc);
+        const ownerEmail = currentUserEmailRef.current;
+        await saveDocumentToDb(parsedDoc, ownerEmail);
         const { pdfData: _inMemoryPdf, ...lightDoc } = parsedDoc;
-        setDocuments((prev) => [lightDoc, ...prev]);
+        // Persist immediately to the logged-in user's account on the server
+        saveAccountDocument(lightDoc).catch(() => {});
+        setDocuments((prev) => [
+          lightDoc,
+          ...prev.filter((d) => d.id !== lightDoc.id),
+        ]);
         setActiveDoc(lightDoc);
         lastFetchedQuestionsDocIdRef.current = null;
         setComprehensionEntries([]);
@@ -274,24 +392,43 @@ export default function App() {
   const handleOpenDocument = useCallback(
     (doc: PdfDocumentRecord) => {
       speech.stopAll();
-      setActiveDoc(doc);
+      const now = Date.now();
+      const openedDoc: PdfDocumentRecord = { ...doc, lastOpenedAt: now };
+      setActiveDoc(openedDoc);
+      setDocuments((prev) =>
+        [
+          openedDoc,
+          ...prev.filter((d) => d.id !== openedDoc.id),
+        ].sort((a, b) => (b.lastOpenedAt || 0) - (a.lastOpenedAt || 0))
+      );
       lastFetchedQuestionsDocIdRef.current = null;
       setComprehensionEntries([]);
       setSuggestedQuestions([]);
       setAiError(null);
       setActiveView("reader");
       const resumeIndex = Math.min(
-        Math.max(0, doc.lastParagraphIndex || 0),
-        Math.max(0, doc.paragraphs.length - 1)
+        Math.max(0, openedDoc.lastParagraphIndex || 0),
+        Math.max(0, openedDoc.paragraphs.length - 1)
       );
       speech.syncInitialPosition(resumeIndex);
+      const ownerEmail = currentUserEmailRef.current;
+      updateDocumentProgressInDb(openedDoc.id, resumeIndex, ownerEmail).catch(
+        () => {}
+      );
+      updateAccountDocumentState(openedDoc.id, {
+        lastParagraphIndex: resumeIndex,
+        lastOpenedAt: now,
+      }).catch(() => {});
     },
     [speech]
   );
 
   const handleDeleteDocument = useCallback(
     async (id: string) => {
-      await deleteDocumentFromDb(id);
+      await Promise.allSettled([
+        deleteDocumentFromDb(id),
+        deleteAccountDocument(id),
+      ]);
       setDocuments((prev) => prev.filter((d) => d.id !== id));
       if (activeDoc?.id === id) {
         speech.stopAll();
@@ -304,7 +441,12 @@ export default function App() {
 
   const handleClearAllData = useCallback(async () => {
     speech.stopAll();
-    await clearAllDocumentsFromDb();
+    const ownerEmail = currentUserEmailRef.current;
+    await Promise.allSettled([
+      clearAllDocumentsFromDb(ownerEmail),
+      clearAccountDocuments(),
+      clearTtsAudioCache(),
+    ]);
     lastFetchedQuestionsDocIdRef.current = null;
     setDocuments([]);
     setActiveDoc(null);
@@ -316,7 +458,9 @@ export default function App() {
     setUploadError(null);
     try {
       const updated = await runLocalOcrOnDocument(activeDoc, setOcrProgress);
-      await saveDocumentToDb(updated);
+      const ownerEmail = currentUserEmailRef.current;
+      await saveDocumentToDb(updated, ownerEmail);
+      saveAccountDocument(updated).catch(() => {});
       setActiveDoc(updated);
       setDocuments((prev) =>
         prev.map((d) => (d.id === updated.id ? updated : d))
@@ -337,7 +481,9 @@ export default function App() {
     if (!activeDoc) return;
     try {
       const updated = await runAiOcrOnDocument(activeDoc, setOcrProgress);
-      await saveDocumentToDb(updated);
+      const ownerEmail = currentUserEmailRef.current;
+      await saveDocumentToDb(updated, ownerEmail);
+      saveAccountDocument(updated).catch(() => {});
       setActiveDoc(updated);
       setDocuments((prev) =>
         prev.map((d) => (d.id === updated.id ? updated : d))
@@ -592,8 +738,26 @@ export default function App() {
     (updater: (doc: PdfDocumentRecord) => PdfDocumentRecord) => {
       setActiveDoc((prev) => {
         if (!prev) return prev;
-        const updated = updater(prev);
-        saveDocumentToDb(updated).catch(() => {});
+        const updated = {
+          ...updater(prev),
+          lastOpenedAt: Date.now(),
+        };
+        const ownerEmail = currentUserEmailRef.current;
+        saveDocumentToDb(updated, ownerEmail).catch(() => {});
+        updateAccountDocumentState(updated.id, {
+          lastParagraphIndex: updated.lastParagraphIndex,
+          lastOpenedAt: updated.lastOpenedAt,
+          bookmark: updated.bookmark ?? null,
+          highlights: updated.highlights || [],
+          studyNotes: updated.studyNotes || [],
+        })
+          .then((ok) => {
+            if (!ok) {
+              // If document wasn't synced to server yet, upload full copy now
+              saveAccountDocument(updated).catch(() => {});
+            }
+          })
+          .catch(() => {});
         setDocuments((docs) =>
           docs.map((d) => (d.id === updated.id ? updated : d))
         );
@@ -622,7 +786,7 @@ export default function App() {
           snippet: target.text.slice(0, 140),
           updatedAt: Date.now(),
         };
-        return { ...doc, bookmark };
+        return { ...doc, lastParagraphIndex: clamped, bookmark };
       });
     },
     [persistActiveDocMutation]
@@ -644,7 +808,7 @@ export default function App() {
           snippet: target.text.slice(0, 140),
           updatedAt: Date.now(),
         };
-        return { ...doc, bookmark };
+        return { ...doc, lastParagraphIndex: clamped, bookmark };
       });
     },
     [persistActiveDocMutation]
@@ -750,6 +914,11 @@ export default function App() {
       speech.stopAll();
       await logoutSession(allSessions);
       setCurrentUser(null);
+      setDocuments([]);
+      setActiveDoc(null);
+      setComprehensionEntries([]);
+      setSuggestedQuestions([]);
+      lastFetchedQuestionsDocIdRef.current = null;
       setAssistantOpen(false);
       setActiveView("reader");
       loadAuthStatus();
@@ -792,6 +961,7 @@ export default function App() {
         <AuthGateView
           authStatus={authStatus}
           onAuthenticated={handleAuthenticated}
+          onRefreshAuthStatus={refreshAuthStatusSilently}
         />
       );
     }
@@ -856,6 +1026,7 @@ export default function App() {
       {activeView === "reader" && !activeDoc && (
         <UploadWelcome
           recentDocuments={documents}
+          isLoadingDocuments={isLoadingDocuments}
           isProcessing={isProcessingPdf}
           processingStatus={processingStatus}
           errorMessage={uploadError}
@@ -863,6 +1034,7 @@ export default function App() {
           onLoadSamplePdf={handleLoadSamplePdf}
           onOpenDocument={handleOpenDocument}
           onOpenSettings={() => setActiveView("settings")}
+          onOpenLibrary={() => setActiveView("library")}
         />
       )}
 

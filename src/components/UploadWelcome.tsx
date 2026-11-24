@@ -17,6 +17,7 @@ import calmDeskImg from "../assets/images/calm_reading_desk_1794575615148.jpg";
 
 interface UploadWelcomeProps {
   recentDocuments: PdfDocumentRecord[];
+  isLoadingDocuments?: boolean;
   isProcessing: boolean;
   processingStatus: string;
   errorMessage: string | null;
@@ -24,10 +25,12 @@ interface UploadWelcomeProps {
   onLoadSamplePdf: () => void;
   onOpenDocument: (doc: PdfDocumentRecord) => void;
   onOpenSettings: () => void;
+  onOpenLibrary?: () => void;
 }
 
 export const UploadWelcome: React.FC<UploadWelcomeProps> = ({
   recentDocuments,
+  isLoadingDocuments = false,
   isProcessing,
   processingStatus,
   errorMessage,
@@ -35,8 +38,22 @@ export const UploadWelcome: React.FC<UploadWelcomeProps> = ({
   onLoadSamplePdf,
   onOpenDocument,
   onOpenSettings,
+  onOpenLibrary,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
+  const latestDoc = recentDocuments[0] || null;
+  const latestProgressPct =
+    latestDoc && latestDoc.paragraphs.length > 0
+      ? Math.round(
+          ((Math.max(0, latestDoc.lastParagraphIndex) + 1) /
+            latestDoc.paragraphs.length) *
+            100
+        )
+      : 0;
+  const latestResumePage =
+    latestDoc?.bookmark?.pageNumber ||
+    latestDoc?.paragraphs[latestDoc.lastParagraphIndex]?.pageNumber ||
+    1;
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -52,6 +69,56 @@ export const UploadWelcome: React.FC<UploadWelcomeProps> = ({
   return (
     <div className="bg-[radial-gradient(ellipse_at_top_right,rgba(13,148,136,0.10),transparent_52%),radial-gradient(ellipse_at_top_left,rgba(37,99,235,0.07),transparent_48%)]">
       <main className="mx-auto max-w-[1240px] px-4 py-8 sm:px-6 lg:py-12">
+        {/* Account-saved quick resume banner right at top when user has saved PDFs */}
+        {!isLoadingDocuments && latestDoc && (
+          <section
+            aria-label="Continuar leitura salva na sua conta"
+            className="mb-8 rounded-2xl border border-teal-200/90 bg-white/95 p-4 shadow-sm sm:p-5"
+          >
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-bold tracking-wider uppercase text-teal-700">
+                  Salvo na sua conta · Continue de onde parou
+                </p>
+                <h2 className="mt-1 truncate font-display text-lg font-bold text-slate-950 sm:text-xl">
+                  {latestDoc.title}
+                </h2>
+                <p className="mt-1 text-xs text-slate-600 tabular-nums sm:text-sm">
+                  Página {latestResumePage} de {latestDoc.pageCount} ·{" "}
+                  {latestProgressPct}% lido
+                  {latestDoc.bookmark
+                    ? ` · Ponto salvo: ${latestDoc.bookmark.chapter || `Pág. ${latestDoc.bookmark.pageNumber}`}`
+                    : ""}
+                  {(latestDoc.highlights?.length || 0) > 0
+                    ? ` · ${latestDoc.highlights?.length} marcação(ões)`
+                    : ""}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => onOpenDocument(latestDoc)}
+                  className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-teal-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-teal-800 transition-colors whitespace-nowrap"
+                >
+                  <BookOpen className="h-4 w-4" aria-hidden="true" />
+                  <span>Continuar leitura</span>
+                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                </button>
+                {recentDocuments.length > 1 && onOpenLibrary && (
+                  <button
+                    type="button"
+                    onClick={onOpenLibrary}
+                    className="inline-flex min-h-[44px] items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                  >
+                    Ver todos ({recentDocuments.length})
+                  </button>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Main hero split: vibrant editorial typography + upload studio + framed visual */}
         <section className="grid grid-cols-1 items-stretch gap-8 lg:grid-cols-12 lg:gap-10">
           <div className="flex flex-col justify-center lg:col-span-7">
@@ -234,12 +301,13 @@ export const UploadWelcome: React.FC<UploadWelcomeProps> = ({
                 <ShieldCheck className="h-5 w-5" aria-hidden="true" />
               </span>
               <h2 className="text-base font-bold text-slate-950">
-                Privacidade local garantida
+                Salvo com segurança na sua conta
               </h2>
             </div>
             <p className="mt-2.5 text-sm leading-relaxed text-slate-600">
-              Seus PDFs, marcações e histórico ficam salvos apenas no seu
-              navegador. Recursos externos de IA só rodam se você autorizar.
+              Seus PDFs, progresso de leitura, marcações e ponto de parada ficam
+              salvos na sua conta para retomar quando voltar. IA só roda se você
+              autorizar.
             </p>
           </div>
         </section>
@@ -324,13 +392,27 @@ export const UploadWelcome: React.FC<UploadWelcomeProps> = ({
         {/* Recent documents if available */}
         {recentDocuments.length > 0 && (
           <section className="mt-12 border-t border-slate-200/90 pt-10">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="font-display text-xl font-bold text-slate-950">
-                Continuar leitura recente
-              </h2>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="font-display text-xl font-bold text-slate-950">
+                  Seus PDFs salvos na conta
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Clique em qualquer documento para retomar exatamente do ponto salvo ou escolher outra página.
+                </p>
+              </div>
+              {recentDocuments.length > 6 && onOpenLibrary && (
+                <button
+                  type="button"
+                  onClick={onOpenLibrary}
+                  className="text-sm font-semibold text-teal-800 hover:underline whitespace-nowrap"
+                >
+                  Abrir biblioteca completa
+                </button>
+              )}
             </div>
             <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {recentDocuments.slice(0, 3).map((doc) => {
+              {recentDocuments.slice(0, 6).map((doc) => {
                 const progressPct =
                   doc.paragraphs.length > 0
                     ? Math.round(

@@ -21,6 +21,16 @@ export function getAuthHeaders(): Record<string, string> {
     : {};
 }
 
+export class AuthApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "AuthApiError";
+    this.status = status;
+  }
+}
+
 async function parseAuthJson<T>(response: Response): Promise<T | null> {
   try {
     const text = await response.text();
@@ -40,8 +50,9 @@ export async function fetchAuthStatus(): Promise<AuthStatusResponse> {
     response
   );
   if (!response.ok || !data) {
-    throw new Error(
-      data?.error || "Não foi possível verificar o status de acesso do servidor."
+    throw new AuthApiError(
+      data?.error || "Não foi possível verificar o status de acesso do servidor.",
+      response.status
     );
   }
   return data;
@@ -62,7 +73,10 @@ export async function setupAdminAccount(params: {
     error?: string;
   }>(response);
   if (!response.ok || !data?.token || !data?.user) {
-    throw new Error(data?.error || "Não foi possível ativar sua conta agora.");
+    throw new AuthApiError(
+      data?.error || "Não foi possível ativar sua conta agora.",
+      response.status
+    );
   }
   setAuthToken(data.token);
   return { token: data.token, user: data.user };

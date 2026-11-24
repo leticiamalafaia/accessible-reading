@@ -8,7 +8,8 @@ import {
   mountAuthRoutes,
   requireAuth,
   securityHeadersMiddleware,
-} from "./serverAuth";
+} from "./serverAuth.ts";
+import { mountDocumentRoutes } from "./serverDocuments.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -190,6 +191,7 @@ async function startServer() {
   });
 
   mountAuthRoutes(app);
+  mountDocumentRoutes(app);
 
   const aiRateLimiter = createRateLimiter(
     5 * 60 * 1000,
